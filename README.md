@@ -1,6 +1,6 @@
 
 
-# 🧠 Mini-GPT
+#  Mini-GPT
 
 A small GPT-style (decoder-only Transformer) language model written from scratch in PyTorch, trained on the Tiny Shakespeare dataset, and served through a Gradio web app.
 
