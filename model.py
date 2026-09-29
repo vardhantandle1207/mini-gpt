@@ -22,6 +22,15 @@ Shape legend used in the comments below:
 The model also supports a KV cache: during generation, the keys and values of
 past tokens are stored so each new step only has to process one new token
 instead of re-running the whole sequence.
+
+Key concepts (search for the "=====" banners):
+    [1] KV CACHE                       CausalSelfAttention.forward, MiniGPT.generate
+    [2] SCALED DOT-PRODUCT ATTENTION   CausalSelfAttention.forward
+    [3] CAUSAL MASK                    CausalSelfAttention.forward
+    [4] PRE-LAYERNORM RESIDUAL BLOCK   Block.forward
+    [5] LEARNED POSITIONAL EMBEDDINGS  MiniGPT.forward
+    [6] SAMPLING (temperature/top-k/top-p)  MiniGPT.generate
+    Next-token cross-entropy loss and AdamW live in train.py.
 """
 
 import torch
@@ -66,7 +75,7 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, hs).transpose(1, 2)
         v = v.view(B, T, self.n_head, hs).transpose(1, 2)
 
-        # --- KV CACHE LOGIC ---
+        # ===== [1] KV CACHE =====
         # Prepend the cached keys/values from earlier tokens, so the new query
         # can attend to the whole history without recomputing it.
         if layer_past is not None:
@@ -75,12 +84,14 @@ class CausalSelfAttention(nn.Module):
             v = torch.cat([past_v, v], dim=-2)
 
         present = (k, v) if use_cache else None
-        # ----------------------
+        # ===== end KV CACHE =====
 
+        # ===== [2] SCALED DOT-PRODUCT ATTENTION: softmax(Q K^T / sqrt(d_k)) V =====
         # 3. Compute Attention scores, scaled by 1/sqrt(hs) to keep softmax well-behaved
         # (B, nh, T, hs) @ (B, nh, hs, T_total) -> (B, nh, T, T_total)
         att = (q @ k.transpose(-2, -1)) * (1.0 / (hs ** 0.5))
 
+        # ===== [3] CAUSAL MASK =====
         # 4. Causal masking: block attention to future positions.
         # When T == 1 (a single new token using the KV cache) there is no future
         # to hide, so the mask is skipped.
@@ -92,6 +103,7 @@ class CausalSelfAttention(nn.Module):
 
         # 5. Aggregate Values: weighted sum of values for each query
         y = att @ v                                          # (B, nh, T, hs)
+        # ===== end SCALED DOT-PRODUCT ATTENTION =====
         # Merge heads back: (B, nh, T, hs) -> (B, T, C)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
@@ -115,11 +127,13 @@ class Block(nn.Module):
         )
 
     def forward(self, x, use_cache=False, layer_past=None):
+        # ===== [4] PRE-LAYERNORM RESIDUAL BLOCK: x = x + f(LayerNorm(x)) =====
         # Tokens communicate with each other (attention) ...
         attn_out, present = self.attn(self.ln_1(x), use_cache=use_cache, layer_past=layer_past)
         x = x + attn_out
         # ... then each token is processed independently (MLP)
         x = x + self.mlp(self.ln_2(x))
+        # ===== end PRE-LAYERNORM RESIDUAL BLOCK =====
         return x, present
 
 class MiniGPT(nn.Module):
@@ -166,6 +180,7 @@ class MiniGPT(nn.Module):
         # Number of tokens already in the cache. New tokens get positions after them.
         past_length = past_key_values[0][0].size(-2) if past_key_values is not None else 0
 
+        # ===== [5] LEARNED POSITIONAL EMBEDDINGS =====
         tok_emb = self.token_embedding_table(idx)                                          # (B, T, C)
         pos = torch.arange(past_length, past_length + T, dtype=torch.long, device=idx.device)  # (T,)
         # Note: position_embedding_table only has block_size rows, so
@@ -173,6 +188,7 @@ class MiniGPT(nn.Module):
         pos_emb = self.position_embedding_table(pos)                                       # (T, C)
 
         x = tok_emb + pos_emb   # (B, T, C), position embedding broadcasts over batch
+        # ===== end LEARNED POSITIONAL EMBEDDINGS =====
 
         presents = [] if use_cache else None
 
@@ -205,6 +221,7 @@ class MiniGPT(nn.Module):
             3. Optionally filter with top-k and/or top-p
             4. Sample one token and append it to the sequence
         """
+        # ===== [1] KV CACHE: incremental decoding =====
         # Store KV cache across generation steps
         past_key_values = None
 
@@ -219,6 +236,7 @@ class MiniGPT(nn.Module):
             # Forward pass
             logits, past_key_values = self(idx_cond, use_cache=True, past_key_values=past_key_values)
 
+            # ===== [6] SAMPLING: temperature -> top-k -> top-p -> multinomial =====
             # Pluck the logits at the final step and scale by desired temperature
             # logits shape is (B, T, vocab_size). We want (B, vocab_size)
             logits = logits[:, -1, :] / temperature
@@ -253,11 +271,20 @@ class MiniGPT(nn.Module):
 
             # Sample from the probability distribution
             idx_next = torch.multinomial(probs, num_samples=1)   # (B, 1)
+            # ===== end SAMPLING =====
 
             # Append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+def load_checkpoint(path, device):
+    """Rebuild a MiniGPT from a checkpoint saved by train.py ({'config': ..., 'model': state_dict})."""
+    # map_location lets weights trained on GPU/MPS load on any device
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    model = MiniGPT(**checkpoint['config'])
+    model.load_state_dict(checkpoint['model'])
+    return model.to(device)
 
 # --- TEST SCRIPT ---
 # Run `python model.py` to check that the KV cache is correct:

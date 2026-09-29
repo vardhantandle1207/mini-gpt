@@ -12,31 +12,18 @@ Then open the local URL Gradio prints (usually http://127.0.0.1:7860).
 This file is also the entry point for the Hugging Face Space (see app_file in README.md).
 """
 
-import os
 import torch
 import tiktoken
 import gradio as gr
-from model import MiniGPT
+from model import load_checkpoint
 
-# 1. Initialize identical model parameters
-# These must match the values used in train.py, otherwise the saved weights won't load.
+# 1. Tokenizer and device
 enc = tiktoken.get_encoding("gpt2")
-vocab_size = enc.n_vocab
-n_embd = 64
-n_head = 4
-n_layer = 4
-block_size = 64
 device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 
-# 2. Instantiate model and load trained weights
-model = MiniGPT(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
-
-if os.path.exists('mini_gpt.pt'):
-    # map_location lets weights trained on GPU/MPS load on any device
-    model.load_state_dict(torch.load('mini_gpt.pt', map_location=device, weights_only=True))
-    print("Loaded trained weights successfully!")
-else:
-    print("Warning: mini_gpt.pt not found. Running with random weights.")
+# 2. Rebuild the model from mini_gpt.pt (the checkpoint stores its own hyperparameters)
+model = load_checkpoint('mini_gpt.pt', device)
+print("Loaded trained weights successfully!")
 
 model.eval() # Set model to evaluation mode
 
@@ -49,7 +36,6 @@ def generate_text(prompt, max_tokens, temperature, top_k, top_p):
     else:
         idx = torch.tensor([enc.encode(prompt, allowed_special="all")], dtype=torch.long, device=device)
 
-    # Call your custom generation engine!
     # Sliders return floats, so cast to the types generate() expects.
     generated_indices = model.generate(
         idx,

@@ -51,8 +51,7 @@ max_iters = 1000      # total training steps
 eval_interval = 100   # how often to print train/val loss
 learning_rate = 1e-3
 
-# Model architecture params
-# NOTE: app.py hard-codes the same values; if you change them here, change them there too.
+# Model architecture params (saved in mini_gpt.pt, so app.py and bench.py pick them up automatically)
 n_embd = 64
 n_head = 4
 n_layer = 4
@@ -102,6 +101,8 @@ def estimate_loss(model):
 # 5. Initialization & Training Loop
 # -----------------
 model = MiniGPT(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
+
+# ===== ADAMW OPTIMIZER =====
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 print(f"Starting training for {max_iters} iterations...")
@@ -115,6 +116,7 @@ for iter in range(max_iters):
     # Sample a batch of data
     xb, yb = get_batch('train')
 
+    # ===== NEXT-TOKEN CROSS-ENTROPY LOSS =====
     # Forward pass: predict the next token at every position, compare with targets
     logits, _ = model(xb)
     B, T, C = logits.shape
@@ -122,6 +124,7 @@ for iter in range(max_iters):
     targets = yb.view(B * T)
     loss = F.cross_entropy(logits, targets)
 
+    # ===== ADAMW UPDATE STEP =====
     # Backward pass: clear old gradients, compute new ones, update weights
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -136,7 +139,7 @@ print("\n--- Generation Test ---")
 # Start from token id 0. (With the GPT-2 BPE tokenizer, id 0 is the "!" character.)
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 
-print("Generating 200 characters with KV Cache...")
+print("Generating 200 tokens with KV Cache...")
 # Try tweaking temperature and top_k!
 # Note: max_new_tokens=200 is more than block_size (64). On CPU this raises an
 # IndexError in the position embedding (see "Known limitations" in README.md).
@@ -149,5 +152,6 @@ print(generated_text)
 # -----------------
 # 7. Save Weights
 # -----------------
-# Only the state_dict (weights) is saved; app.py rebuilds the model with the same hyperparameters.
-torch.save(model.state_dict(), 'mini_gpt.pt')
+# Save the hyperparameters with the weights, so model.load_checkpoint() can rebuild the model.
+config = dict(vocab_size=vocab_size, n_embd=n_embd, n_head=n_head, n_layer=n_layer, block_size=block_size)
+torch.save({'config': config, 'model': model.state_dict()}, 'mini_gpt.pt')

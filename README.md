@@ -1,6 +1,4 @@
-
-
-#  Mini-GPT
+# Mini-GPT
 
 A small GPT-style (decoder-only Transformer) language model written from scratch in PyTorch, trained on the Tiny Shakespeare dataset, and served through a Gradio web app.
 
@@ -13,6 +11,15 @@ A small GPT-style (decoder-only Transformer) language model written from scratch
 - A built-in self-test that checks the KV cache gives the same results as a normal forward pass
 - Gradio UI, ready to deploy as a Hugging Face Space
 
+**Results** (checkpoint in this repo, averaged over 200 random batches of 32×64 tokens)
+
+| Split | Loss | Perplexity |
+|---|---|---|
+| Train | 4.31 | 75 |
+| Val | 4.90 | 134 |
+
+For reference, a random model starts at ln(50,257) ≈ 10.8. The gap between train and val shows the model is starting to overfit, which is expected with no dropout on ~300k training tokens.
+
 ---
 
 ## Project structure
@@ -22,8 +29,9 @@ A small GPT-style (decoder-only Transformer) language model written from scratch
 | [model.py](model.py) | Model definition: `CausalSelfAttention`, `Block`, `MiniGPT` (forward pass + `generate()`). Run it directly to test the KV cache. |
 | [train.py](train.py) | Tokenizes `input.txt`, trains the model, prints losses, generates a sample, and saves `mini_gpt.pt`. |
 | [app.py](app.py) | Loads `mini_gpt.pt` and starts the Gradio web interface. |
+| [bench.py](bench.py) | Measures generation speed (tokens/sec) with and without the KV cache. |
 | `input.txt` | Training text (Tiny Shakespeare, ~1.1 MB, ~338k BPE tokens). |
-| `mini_gpt.pt` | Trained weights (~26 MB). Created by `train.py`. |
+| `mini_gpt.pt` | Trained weights plus the model hyperparameters (~26 MB). Created by `train.py`. |
 | [requirements.txt](requirements.txt) | Python dependencies: `torch`, `tiktoken`, `gradio`. |
 
 ---
@@ -100,7 +108,7 @@ This will:
 1. Read `input.txt` and encode it with the GPT-2 tokenizer
 2. Train for 1,000 steps, printing train/val loss every 100 steps
 3. Print a generated sample
-4. Save the weights to `mini_gpt.pt`
+4. Save the weights and hyperparameters to `mini_gpt.pt`
 
 A trained `mini_gpt.pt` is already included, so you can skip this step and go straight to the app.
 
@@ -112,7 +120,7 @@ python app.py
 
 Open the URL Gradio prints (usually http://127.0.0.1:7860), enter a prompt such as `ROMEO:`, and click **Generate Text**.
 
-If `mini_gpt.pt` is missing, the app still starts, but with random weights (the output will be gibberish).
+The app and `bench.py` need `mini_gpt.pt`. They read the model's hyperparameters from it, so they keep working if you change the architecture in `train.py` and retrain.
 
 ---
 
@@ -140,17 +148,39 @@ With the cache:
 
 `python model.py` checks this: the logits for the 5th token must be the same whether you run all 5 tokens at once, or run 4 tokens and then the 5th token with the cache.
 
+### Benchmark
+
+```bash
+python bench.py
+```
+
+This generates 63 tokens from a 1-token prompt (the most the 64-token context allows) with greedy decoding, once re-running the full sequence at every step and once using the KV cache. It times 20 runs of each and checks that both methods produce the same tokens. Example results on an Apple Silicon Mac:
+
+| Device | No cache | KV cache | Speedup |
+|---|---|---|---|
+| CPU | ~680 tok/s | ~2,260 tok/s | **~3.3×** |
+| MPS (Apple GPU) | ~157 tok/s | ~153 tok/s | ~1.0× |
+
+On CPU the cache gives a clear speedup. On MPS it doesn't help: the model is so small that per-step GPU launch overhead dominates, so skipping work saves almost nothing. The speedup is also limited by the short 64-token context, because longer sequences have more repeated work for the cache to skip. Numbers vary between runs and machines.
+
 ---
 
 ## Deploying to Hugging Face Spaces
 
-The YAML block at the top of this README is the Space configuration (`sdk: gradio`, `app_file: app.py`). To deploy:
-
 1. Create a new Space with the **Gradio** SDK.
-2. Push `app.py`, `model.py`, `requirements.txt`, `README.md`, and `mini_gpt.pt` to it.
-3. The Space installs `requirements.txt` and runs `app.py`.
+2. In the Space's copy of `README.md`, put this configuration block at the very top (it is left out of this GitHub README so it doesn't show up as a table):
 
-You may want to change `title: y` in the header to a proper name. It is the title shown on the Space page.
+   ```yaml
+   ---
+   title: Mini-GPT
+   app_file: app.py
+   sdk: gradio
+   sdk_version: 6.28.0
+   ---
+   ```
+
+3. Push `app.py`, `model.py`, `requirements.txt`, `README.md`, and `mini_gpt.pt` to it.
+4. The Space installs `requirements.txt` and runs `app.py`.
 
 ---
 
@@ -162,7 +192,6 @@ You may want to change `title: y` in the header to a proper name. It is the titl
 
   Workaround for now: keep `Max New Tokens` + prompt length under 64. A proper fix is to drop the cache and re-crop the context to the last `block_size` tokens once the sequence gets longer than the window.
 - **Small model, short training run.** Expect Shakespeare-*flavoured* text, not coherent sentences.
-- **Hyperparameters are duplicated** in `train.py` and `app.py`. If you change the architecture in one, change it in the other, or `mini_gpt.pt` won't load.
 - An empty prompt starts generation from token id 0, which is the `!` character in the GPT-2 tokenizer.
 
 ---
@@ -172,5 +201,4 @@ You may want to change `title: y` in the header to a proper name. It is the titl
 - Fix the context-window limitation above (sliding window + cache reset)
 - Add dropout and a learning-rate schedule
 - Tie the weights of `token_embedding_table` and `lm_head` (cuts ~3.2M parameters)
-- Save the hyperparameters together with the weights in the checkpoint
 - Stream tokens to the Gradio UI as they are generated
